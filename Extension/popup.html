@@ -31,8 +31,10 @@
       <button id="got-it" class="text-button">Got it</button>
     </section>
     <section id="review">
-      <div class="section-heading"><h2>Posts</h2><div class="segments"><button id="hidden-tab" class="selected">Hidden</button><button id="all-tab">All</button></div></div>
-      <div id="posts" aria-live="polite"></div>
+      <div class="section-heading"><h2>Posts</h2><div id="filters" class="segments" role="tablist" aria-label="Post visibility"><button id="hidden-tab" class="selected" role="tab" aria-selected="true" aria-controls="posts">Hidden</button><button id="visible-tab" role="tab" aria-selected="false" aria-controls="posts" tabindex="-1">Visible</button><button id="all-tab" role="tab" aria-selected="false" aria-controls="posts" tabindex="-1">All</button></div></div>
+      <div role="search"><input id="search" type="search" placeholder="Search posts" aria-label="Search posts" maxlength="200" autocomplete="off"></div>
+      <div class="activity" aria-label="Filtering activity"><span title="Posts reviewed under the current filter">Processed <strong id="processed-count">–</strong></span><span>Checking <strong id="checking-count">0</strong></span><span>Queued <strong id="queue-count">0</strong></span></div>
+      <div id="posts" role="tabpanel" aria-labelledby="hidden-tab" aria-live="polite"></div>
     </section>
     <p id="error" class="error" role="status" hidden></p>
   </main>

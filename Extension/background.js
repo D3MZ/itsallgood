@@ -12,9 +12,10 @@ async function native(message) {
   return result;
 }
 
-async function settings() {
+async function settings(retryKeychain = false) {
   const stored = await browser.storage.local.get(["enabled", "lastError", "showWelcome"]);
-  const status = await native({ type: "status" });
+  const status = await native({ type: "status", retryKeychain });
+  if (status.sessionRecovered) await notifyTabs({ type: "refresh" });
   return { ...status, enabled: stored.enabled !== false, lastError: stored.lastError, showWelcome: stored.showWelcome };
 }
 
@@ -22,6 +23,10 @@ async function notifyTabs(message) {
   const tabs = await browser.tabs.query({});
   await Promise.all(tabs.filter(tab => /^https?:\/\/(x|twitter)\.com\//i.test(tab.url || ""))
     .map(tab => browser.tabs.sendMessage(tab.id, message).catch(() => {})));
+}
+
+function notifyActivity(saved = false) {
+  browser.runtime.sendMessage({ type: "activity_changed", checking: running, queued: queue.length, saved }).catch(() => {});
 }
 
 function drain() {
@@ -32,9 +37,11 @@ function drain() {
       continue;
     }
     running++;
+    notifyActivity();
     native({ type: "classify", post: item.post }).then(result => {
       browser.storage.local.remove("lastError").catch(() => {});
       item.resolve(result);
+      if (!result.cached) notifyActivity(true);
     }, error => {
       console.error("Its All Good: classification failed", error.message);
       browser.storage.local.set({ lastError: error.message }).catch(() => {});
@@ -43,6 +50,7 @@ function drain() {
       item.reject(error);
     }).finally(() => { running--; drain(); });
   }
+  notifyActivity();
 }
 
 function classify(post) {
@@ -77,7 +85,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   const senderURL = sender.url || sender.tab?.url || "";
   const extensionPage = senderURL.startsWith(browser.runtime.getURL("")) || (!senderURL && !sender.tab);
   const page = /^https?:\/\/(x|twitter)\.com\//i.test(senderURL);
-  if (message.type === "settings" && (page || extensionPage)) return settings();
+  if (message.type === "settings" && (page || extensionPage)) return settings(extensionPage);
   if (message.type === "classify" && page && message.post?.id && message.post?.fingerprint) return classify(message.post);
   if (!extensionPage) return;
   if (message.type === "sign_in") return signIn();
@@ -91,9 +99,11 @@ browser.runtime.onMessage.addListener((message, sender) => {
     return { ok: true };
   });
   if (message.type === "dismiss_welcome") return browser.storage.local.remove("showWelcome").then(() => ({ ok: true }));
-  if (message.type === "recent") return native({ type: "recent", hiddenOnly: !!message.hiddenOnly });
+  if (message.type === "recent") return native({ type: "recent", filter: message.filter || (message.hiddenOnly === false ? "all" : "hidden"), search: message.search || "", limit: message.limit || 100 });
+  if (message.type === "stats") return native({ type: "stats" }).then(result => ({ ...result, checking: running, queued: queue.length }));
   if (message.type === "restore") return native({ type: "restore", id: message.id }).then(async result => {
     await notifyTabs({ type: "restore", id: message.id });
+    notifyActivity(true);
     return result;
   });
 });

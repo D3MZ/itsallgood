@@ -6,6 +6,7 @@
 //
 
 import WebKit
+import os.log
 
 #if os(iOS)
 import UIKit
@@ -43,10 +44,13 @@ class ViewController: PlatformViewController, WKNavigationDelegate, WKScriptMess
         webView.evaluateJavaScript("show('mac')")
 
         SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: extensionBundleIdentifier) { (state, error) in
-            guard let state = state, error == nil else {
-                // Insert code to inform the user that something went wrong.
+            let log = Logger(subsystem: "com.demetrius.itsallgood", category: "app")
+            if let error = error {
+                log.error("Could not check Safari extension: \(error.localizedDescription, privacy: .public)")
                 return
             }
+            guard let state = state else { return }
+            log.info("Safari extension enabled: \(state.isEnabled)")
 
             DispatchQueue.main.async {
                 if #available(macOS 13, *) {

@@ -1,3 +1,59 @@
-article[data-testid="tweet"][data-iag-state="pending"] { visibility: hidden !important; }
-article[data-testid="tweet"][data-iag-state="hidden"] { display: none !important; }
-div[data-testid="cellInnerDiv"]:has(article[data-testid="tweet"][data-iag-state="hidden"]) { display: none !important; }
+/* Mask posts and replies at document_start, before their content can be painted. */
+html:is([data-iag-mode="checking"], [data-iag-mode="active"], [data-iag-mode="error"]) article[data-testid="tweet"]:not([data-iag-state="kept"]) {
+  position: relative !important;
+  visibility: hidden !important;
+}
+
+html:is([data-iag-mode="checking"], [data-iag-mode="active"], [data-iag-mode="error"]) article[data-testid="tweet"]:not([data-iag-state="kept"]) * {
+  visibility: hidden !important;
+}
+
+html:is([data-iag-mode="checking"], [data-iag-mode="active"], [data-iag-mode="error"]) article[data-testid="tweet"][data-iag-state="hidden"],
+html:is([data-iag-mode="checking"], [data-iag-mode="active"], [data-iag-mode="error"]) div[data-testid="cellInnerDiv"]:has(article[data-testid="tweet"][data-iag-state="hidden"]) {
+  display: none !important;
+}
+
+html:is([data-iag-mode="checking"], [data-iag-mode="active"]) article[data-testid="tweet"]:not([data-iag-state="kept"]):not([data-iag-state="hidden"]):not([data-iag-state="error"]):not([data-iag-state="paused"])::before {
+  content: "";
+  position: absolute;
+  top: 22px;
+  left: 20px;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  opacity: 0.55;
+  visibility: visible !important;
+  animation: iag-spin 0.8s linear infinite;
+  pointer-events: none;
+}
+
+html:is([data-iag-mode="checking"], [data-iag-mode="active"], [data-iag-mode="error"]) article[data-testid="tweet"]:not([data-iag-state="kept"]):not([data-iag-state="hidden"])::after {
+  content: "Loading post…";
+  position: absolute;
+  top: 20px;
+  left: 44px;
+  color: inherit;
+  font: 400 14px/18px -apple-system, BlinkMacSystemFont, sans-serif;
+  opacity: 0.7;
+  visibility: visible !important;
+  pointer-events: none;
+}
+
+html[data-iag-mode="error"] article[data-testid="tweet"]:not([data-iag-state="kept"]):not([data-iag-state="hidden"])::after,
+html:is([data-iag-mode="checking"], [data-iag-mode="active"]) article[data-testid="tweet"][data-iag-state="error"]:not([data-iag-state="kept"]):not([data-iag-state="hidden"])::after {
+  content: "Couldn’t load post";
+  left: 20px;
+}
+
+html:is([data-iag-mode="checking"], [data-iag-mode="active"]) article[data-testid="tweet"][data-iag-state="paused"]:not([data-iag-state="kept"]):not([data-iag-state="hidden"])::after {
+  content: "Scroll to load more";
+  left: 20px;
+}
+
+@keyframes iag-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  html:is([data-iag-mode="checking"], [data-iag-mode="active"]) article[data-testid="tweet"]:not([data-iag-state="kept"])::before { animation: none; }
+}
