@@ -14,11 +14,16 @@ function showError(error) {
   $("error").hidden = false;
 }
 function clearError() { $("error").hidden = true; }
-async function send(type, extra = {}) { return browser.runtime.sendMessage({ type, ...extra }); }
+async function send(type, extra = {}) {
+  const result = await browser.runtime.sendMessage({ type, protocol: 2, ...extra });
+  if (!result || result.error) throw new Error(result?.error || "The extension did not respond.");
+  return result;
+}
 
-async function loadSettings() {
+async function loadSettings(retrySession = false) {
+  const history = Promise.all([loadPosts(), loadStats()]);
   try {
-    const state = await send("settings");
+    const state = await send(retrySession ? "retry_session" : "settings");
     $("signed-in").hidden = !state.signedIn;
     $("signed-out").hidden = state.signedIn;
     $("enabled").checked = state.enabled;
@@ -28,9 +33,15 @@ async function loadSettings() {
       $("account").textContent = state.email || "ChatGPT";
       $("model").textContent = `${state.model || "Luna"} · Low thinking`;
     }
+    clearError();
+    $("retry-session").hidden = true;
     if (state.lastError) showError(state.lastError);
-    await Promise.all([loadPosts(), loadStats()]);
-  } catch (error) { showError(error); }
+  } catch (error) {
+    $("enabled").disabled = true;
+    $("retry-session").hidden = false;
+    showError(error);
+  }
+  await history;
 }
 
 function element(tag, className, text) {
@@ -104,6 +115,11 @@ async function loadStats() {
   } catch (error) { if (request === statsRequest) showError(error); }
 }
 
+$("retry-session").addEventListener("click", async () => {
+  $("retry-session").disabled = true;
+  try { await loadSettings(true); }
+  finally { $("retry-session").disabled = false; }
+});
 $("enabled").addEventListener("change", async event => {
   clearError();
   try { await send("set_enabled", { enabled: event.target.checked }); }

@@ -82,37 +82,41 @@ private func advanceSessionRevision(_ fd: Int32) throws -> String {
     return revision
 }
 
+// Temporary local storage; the session is not encrypted. The containing directory
+// and file are private to the user, and writes replace the file atomically.
 private enum Vault {
-    private static let service = "com.demetrius.itsallgood.session"
-    private static let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                                kSecAttrService as String: service,
-                                                kSecAttrAccount as String: "chatgpt"]
+    private static func location() throws -> URL { try dataDirectory().appendingPathComponent("session.json") }
     static func load() throws -> Credentials? {
-        var q = query
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else { throw AppError(message: "Keychain error (\(status)).") }
-        return try JSONDecoder().decode(Credentials.self, from: data)
+        let url = try location()
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard let data = try? Data(contentsOf: url), let credentials = try? JSONDecoder().decode(Credentials.self, from: data) else {
+            throw AppError(message: "Could not read the ChatGPT session.")
+        }
+        return credentials
     }
     static func save(_ credentials: Credentials) throws {
+        let url = try location()
+        let temporary = url.deletingLastPathComponent().appendingPathComponent(".session-\(UUID().uuidString)")
         let data = try JSONEncoder().encode(credentials)
-        let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var q = query
-            q[kSecValueData as String] = data
-            #if os(iOS)
-            q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            #endif
-            let added = SecItemAdd(q as CFDictionary, nil)
-            guard added == errSecSuccess else { throw AppError(message: "Keychain error (\(added)).") }
-        } else if status != errSecSuccess { throw AppError(message: "Keychain error (\(status)).") }
+        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { throw AppError(message: "Could not save the ChatGPT session.") }
+        defer { close(fd); unlink(temporary.path) }
+        let written = data.withUnsafeBytes { bytes -> Bool in
+            guard let base = bytes.baseAddress else { return false }
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(fd, base.advanced(by: offset), bytes.count - offset)
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { return false }
+                offset += count
+            }
+            return fsync(fd) == 0
+        }
+        guard written, rename(temporary.path, url.path) == 0 else { throw AppError(message: "Could not save the ChatGPT session.") }
     }
     static func clear() throws {
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw AppError(message: "Keychain error (\(status)).") }
+        let url = try location()
+        if unlink(url.path) != 0 && errno != ENOENT { throw AppError(message: "Could not remove the ChatGPT session.") }
     }
 }
 
@@ -522,7 +526,7 @@ private actor Backend {
         defer { unlockCredentials(fd) }
         let revision = try sessionRevision(fd)
         if cachedRevision != revision {
-            log.info("Loading ChatGPT session from Keychain")
+            log.info("Loading ChatGPT session")
             do { cachedCredentials = try Vault.load(); cachedLoadError = nil }
             catch { cachedCredentials = nil; cachedLoadError = error }
             cachedRevision = revision
@@ -569,7 +573,7 @@ private actor Backend {
     func handle(_ message: [String: Any], openURL: @escaping (URL) async throws -> Void) async throws -> [String: Any] {
         switch message["type"] as? String {
         case "status":
-            let retry = message["retryKeychain"] as? Bool == true && cachedLoadError != nil
+            let retry = message["retrySession"] as? Bool == true && cachedLoadError != nil
             if retry { cachedRevision = nil; cachedLoadError = nil }
             let session = try storedSession()
             return ["signedIn": session != nil, "email": session?.email ?? "", "model": UserDefaults.standard.string(forKey: "lastModel") ?? "Luna", "sessionRecovered": retry]

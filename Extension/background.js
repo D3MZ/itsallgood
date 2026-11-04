@@ -14,11 +14,24 @@ async function native(message) {
   return result;
 }
 
-async function settings(retryKeychain = false) {
+async function settings(retrySession = false) {
   const stored = await browser.storage.local.get(["enabled", "lastError", "showWelcome"]);
-  const status = await native({ type: "status", retryKeychain });
-  if (status.sessionRecovered) await notifyTabs({ type: "refresh" });
+  const status = await native({ type: "status", retrySession });
+  if (/keychain/i.test(stored.lastError || "")) {
+    await browser.storage.local.remove("lastError");
+    delete stored.lastError;
+  }
+  if (retrySession || status.sessionRecovered) {
+    await browser.storage.local.remove("lastError");
+    delete stored.lastError;
+    pausedUntil = 0;
+    await notifyTabs({ type: "refresh" }).catch(() => {});
+  }
   return { ...status, enabled: stored.enabled !== false, lastError: stored.lastError, showWelcome: stored.showWelcome };
+}
+
+function reply(promise) {
+  return Promise.resolve(promise).catch(error => ({ error: error?.message || String(error) }));
 }
 
 async function notifyTabs(message) {
@@ -116,27 +129,30 @@ browser.runtime.onMessage.addListener((message, sender) => {
   const senderURL = sender.url || sender.tab?.url || "";
   const extensionPage = senderURL.startsWith(browser.runtime.getURL("")) || (!senderURL && !sender.tab);
   const page = /^https?:\/\/(x|twitter)\.com\//i.test(senderURL);
-  if (message.type === "settings" && (page || extensionPage)) return settings(extensionPage);
-  if (message.type === "classify" && page && message.post?.id && message.post?.fingerprint) return classify(message.post, message.priority === true);
+  // Older content scripts must keep receiving rejected promises, not error objects.
+  const respond = value => message.protocol === 2 ? reply(value) : value;
+  if (message.type === "settings" && (page || extensionPage)) return respond(settings());
+  if (message.type === "classify" && page && message.post?.id && message.post?.fingerprint) return respond(classify(message.post, message.priority === true));
   if (message.type === "prioritize" && page && /^\d{1,30}$/.test(message.id || "")) { prioritize(message.id); return Promise.resolve({ ok: true }); }
   if (!extensionPage) return;
-  if (message.type === "sign_in") return signIn();
-  if (message.type === "sign_out") return native({ type: "sign_out" }).then(async result => {
+  if (message.type === "retry_session") return respond(settings(true));
+  if (message.type === "sign_in") return respond(signIn());
+  if (message.type === "sign_out") return respond(native({ type: "sign_out" }).then(async result => {
     await notifyTabs({ type: "refresh" });
     return result;
-  });
-  if (message.type === "set_enabled") return browser.storage.local.set({ enabled: !!message.enabled }).then(async () => {
+  }));
+  if (message.type === "set_enabled") return respond(browser.storage.local.set({ enabled: !!message.enabled }).then(async () => {
     pausedUntil = 0;
     await notifyTabs({ type: "refresh" });
     return { ok: true };
-  });
-  if (message.type === "dismiss_welcome") return browser.storage.local.remove("showWelcome").then(() => ({ ok: true }));
-  if (message.type === "recent") return native({ type: "recent", filter: message.filter || (message.hiddenOnly === false ? "all" : "hidden"), search: message.search || "", limit: message.limit || 100 });
-  if (message.type === "stats") return native({ type: "stats" }).then(result => ({ ...result, checking: running, queued: queue.length }));
-  if (message.type === "clear_history") return clearHistory();
-  if (message.type === "restore") return native({ type: "restore", id: message.id }).then(async result => {
+  }));
+  if (message.type === "dismiss_welcome") return respond(browser.storage.local.remove("showWelcome").then(() => ({ ok: true })));
+  if (message.type === "recent") return respond(native({ type: "recent", filter: message.filter || (message.hiddenOnly === false ? "all" : "hidden"), search: message.search || "", limit: message.limit || 100 }));
+  if (message.type === "stats") return respond(native({ type: "stats" }).then(result => ({ ...result, checking: running, queued: queue.length })));
+  if (message.type === "clear_history") return respond(clearHistory());
+  if (message.type === "restore") return respond(native({ type: "restore", id: message.id }).then(async result => {
     await notifyTabs({ type: "restore", id: message.id });
     notifyActivity(true);
     return result;
-  });
+  }));
 });

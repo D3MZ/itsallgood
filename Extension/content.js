@@ -43,6 +43,11 @@
   const absolute = value => {
     try { return new URL(value, location.origin).href; } catch { return null; }
   };
+  async function send(type, extra = {}) {
+    const result = await browser.runtime.sendMessage({ type, protocol: 2, ...extra });
+    if (!result || result.error) throw new Error(result?.error || "The extension did not respond.");
+    return result;
+  }
 
   function syncMode() {
     if (!document.documentElement) return;
@@ -180,7 +185,7 @@
     try {
       const rect = article.getBoundingClientRect();
       const priority = rect.bottom > 0 && rect.top < innerHeight;
-      const result = await browser.runtime.sendMessage({ type: "classify", post, priority });
+      const result = await send("classify", { post, priority });
       if (result.stale) {
         remaining = Math.min(BATCH_SIZE, remaining + 1);
         if (jobs.get(article) === job) { article.dataset.iagState = "pending"; schedule(); }
@@ -320,7 +325,7 @@
     syncMode();
     if (document.hidden) return;
     try {
-      const settings = await browser.runtime.sendMessage({ type: "settings" });
+      const settings = await send("settings");
       const wasActive = active;
       active = !!(settings.enabled && settings.signedIn);
       if (active && !wasActive) { remaining = BATCH_SIZE; waitingAfterClear = false; }
@@ -329,8 +334,7 @@
       active = false;
       phase = "error";
       console.error("Its All Good: settings unavailable", error.message);
-      // A denied Keychain prompt should not reopen repeatedly without user action.
-      if (!/keychain/i.test(error.message || String(error))) refreshTimer = setTimeout(refresh, 30_000);
+      refreshTimer = setTimeout(refresh, 30_000);
     }
     syncMode();
     schedule();

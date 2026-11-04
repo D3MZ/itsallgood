@@ -54,3 +54,4 @@ a:hover, .text-button:hover { text-decoration: underline; }
 .post-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 7px; color: var(--muted); font-size: 11px; }
 .more { display: block; width: 100%; padding: 12px 0; text-align: center; }
 .error { color: #d83a32; font-size: 12px; line-height: 1.4; margin-top: 14px; overflow-wrap: anywhere; }
+.retry { margin-top: 8px; }
