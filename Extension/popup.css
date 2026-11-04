@@ -38,6 +38,12 @@ a:hover, .text-button:hover { text-decoration: underline; }
 #search { width: 100%; height: 28px; font: inherit; font-size: 12px; }
 .activity { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 10px 0; color: var(--muted); font-size: 11px; }
 .activity strong { color: CanvasText; font-weight: 600; font-variant-numeric: tabular-nums; }
+.clear-history { margin-left: auto; font-size: 11px; }
+.clear-confirmation { padding: 12px; margin-bottom: 10px; background: var(--surface); border-radius: 8px; }
+.clear-confirmation h3 { margin: 0; font-size: 13px; font-weight: 650; }
+.clear-confirmation p { margin: 6px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.clear-actions { display: flex; justify-content: flex-end; gap: 16px; }
+.destructive { color: #d83a32; }
 #posts { max-height: 260px; overflow-y: auto; }
 .empty { color: var(--muted); font-size: 12px; padding: 16px 0; text-align: center; }
 .post { border-top: 1px solid var(--line); padding: 12px 0; }

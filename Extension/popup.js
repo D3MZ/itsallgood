@@ -128,6 +128,27 @@ $("got-it").addEventListener("click", async () => {
   try { await send("dismiss_welcome"); $("welcome").hidden = true; }
   catch (error) { showError(error); }
 });
+function showClearConfirmation(show) {
+  $("clear-confirmation").hidden = !show;
+  $("clear-history").setAttribute("aria-expanded", String(show));
+  $(show ? "cancel-clear" : "clear-history").focus();
+}
+$("clear-history").addEventListener("click", () => showClearConfirmation(true));
+$("cancel-clear").addEventListener("click", () => showClearConfirmation(false));
+$("confirm-clear").addEventListener("click", async () => {
+  clearError();
+  $("confirm-clear").disabled = true;
+  $("cancel-clear").disabled = true;
+  try {
+    await send("clear_history");
+    searchTerm = "";
+    $("search").value = "";
+    showClearConfirmation(false);
+    selectFilter("all");
+    await loadStats();
+  } catch (error) { showError(error); }
+  finally { $("confirm-clear").disabled = false; $("cancel-clear").disabled = false; }
+});
 function selectFilter(value) {
   selectedFilter = value;
   postLimit = 100;

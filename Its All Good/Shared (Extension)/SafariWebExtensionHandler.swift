@@ -420,7 +420,7 @@ private final class Store {
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { throw AppError(message: "Could not open post history.") }
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         sqlite3_busy_timeout(db, 5000)
-        try exec("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, url TEXT NOT NULL, handle TEXT NOT NULL, author TEXT NOT NULL, content TEXT NOT NULL, quoted_text TEXT NOT NULL, posted_at TEXT, discovered_at TEXT NOT NULL, classified_at TEXT NOT NULL, metrics_json TEXT NOT NULL, images_json TEXT NOT NULL, urls_json TEXT NOT NULL, context TEXT NOT NULL, model TEXT NOT NULL, thinking TEXT NOT NULL, hidden INTEGER NOT NULL, reason TEXT NOT NULL, restored INTEGER NOT NULL DEFAULT 0);")
+        try exec("PRAGMA journal_mode=WAL; PRAGMA secure_delete=ON; CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, url TEXT NOT NULL, handle TEXT NOT NULL, author TEXT NOT NULL, content TEXT NOT NULL, quoted_text TEXT NOT NULL, posted_at TEXT, discovered_at TEXT NOT NULL, classified_at TEXT NOT NULL, metrics_json TEXT NOT NULL, images_json TEXT NOT NULL, urls_json TEXT NOT NULL, context TEXT NOT NULL, model TEXT NOT NULL, thinking TEXT NOT NULL, hidden INTEGER NOT NULL, reason TEXT NOT NULL, restored INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS history_meta (id INTEGER PRIMARY KEY CHECK (id=1), generation INTEGER NOT NULL); INSERT OR IGNORE INTO history_meta (id,generation) VALUES (1,0);")
     }
     deinit { sqlite3_close(db) }
     private func exec(_ sql: String) throws { guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw AppError(message: "Post history error.") } }
@@ -439,14 +439,33 @@ private final class Store {
         guard text(s, 0) == post.fingerprint else { return nil }
         return sqlite3_column_int(s, 1) != 0
     }
-    func save(_ post: Post, decision: Decision, model: String) throws {
-        let s = try statement("INSERT INTO posts (id,fingerprint,url,handle,author,content,quoted_text,posted_at,discovered_at,classified_at,metrics_json,images_json,urls_json,context,model,thinking,hidden,reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET fingerprint=excluded.fingerprint,url=excluded.url,handle=excluded.handle,author=excluded.author,content=excluded.content,quoted_text=excluded.quoted_text,posted_at=excluded.posted_at,classified_at=excluded.classified_at,metrics_json=excluded.metrics_json,images_json=excluded.images_json,urls_json=excluded.urls_json,context=excluded.context,model=excluded.model,thinking=excluded.thinking,hidden=excluded.hidden,reason=excluded.reason")
+    func revision() throws -> Int64 {
+        let s = try statement("SELECT generation FROM history_meta WHERE id=1")
+        defer { sqlite3_finalize(s) }
+        guard sqlite3_step(s) == SQLITE_ROW else { throw AppError(message: "Post history error.") }
+        return sqlite3_column_int64(s, 0)
+    }
+    func save(_ post: Post, decision: Decision, model: String, revision: Int64) throws -> Bool {
+        // The revision check and write are one SQLite statement, even across extension processes.
+        let s = try statement("INSERT INTO posts (id,fingerprint,url,handle,author,content,quoted_text,posted_at,discovered_at,classified_at,metrics_json,images_json,urls_json,context,model,thinking,hidden,reason) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? FROM history_meta WHERE id=1 AND generation=? ON CONFLICT(id) DO UPDATE SET fingerprint=excluded.fingerprint,url=excluded.url,handle=excluded.handle,author=excluded.author,content=excluded.content,quoted_text=excluded.quoted_text,posted_at=excluded.posted_at,classified_at=excluded.classified_at,metrics_json=excluded.metrics_json,images_json=excluded.images_json,urls_json=excluded.urls_json,context=excluded.context,model=excluded.model,thinking=excluded.thinking,hidden=excluded.hidden,reason=excluded.reason")
         defer { sqlite3_finalize(s) }
         func json<T: Encodable>(_ value: T) throws -> String { String(data: try JSONEncoder().encode(value), encoding: .utf8) ?? "" }
         let values = [post.id, post.fingerprint, post.url, post.handle, post.author, post.text, post.quotedText, post.postedAt ?? "", post.discoveredAt, ISO8601DateFormatter().string(from: Date()), try json(post.metrics), try json(post.images), try json(post.urls), post.context, model, effort]
         for (index, value) in values.enumerated() { bind(value, Int32(index + 1), s) }
-        sqlite3_bind_int(s, 17, decision.hide ? 1 : 0); bind(decision.reason, 18, s)
+        sqlite3_bind_int(s, 17, decision.hide ? 1 : 0); bind(decision.reason, 18, s); sqlite3_bind_int64(s, 19, revision)
         guard sqlite3_step(s) == SQLITE_DONE else { throw AppError(message: "Could not save post history.") }
+        return sqlite3_changes(db) > 0
+    }
+    func clear() throws {
+        try exec("BEGIN IMMEDIATE")
+        do {
+            try exec("UPDATE history_meta SET generation=generation+1 WHERE id=1; DELETE FROM posts; COMMIT")
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
+        }
+        // Best effort: a concurrent reader can defer truncating the write-ahead log.
+        sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil)
     }
     func restore(_ id: String) throws {
         let s = try statement("UPDATE posts SET restored=1 WHERE id=?")
@@ -611,6 +630,7 @@ private actor Backend {
                     !(post.linkedPreviews ?? []).isEmpty || !(post.links ?? []).isEmpty else {
                 throw AppError(message: "Post content is unavailable.")
             }
+            let historyRevision = try history().revision()
             if let cached = try history().cached(post) { return ["hidden": cached, "cached": true] }
             let expected = generation
             let credentials = try await session()
@@ -625,7 +645,7 @@ private actor Backend {
             let decision = try await OpenAI.classify(post, token: credentials.accessToken, model: model)
             guard generation == expected, let currentSession = try storedSession(), currentSession.clientID == credentials.clientID,
                   currentSession.subject == credentials.subject else { throw AppError(message: "ChatGPT session changed.") }
-            try history().save(post, decision: decision, model: model)
+            guard try history().save(post, decision: decision, model: model, revision: historyRevision) else { return ["stale": true] }
             log.info("Post classified; text characters: \(post.text.count), quoted characters: \(post.quotedText.count), images: \(post.images.count), model: \(model, privacy: .public), hidden: \(decision.hide)")
             return ["hidden": try history().cached(post) ?? decision.hide]
         case "recent":
@@ -637,6 +657,10 @@ private actor Backend {
             if hasMore { posts.removeLast() }
             return ["posts": posts, "hasMore": hasMore]
         case "stats": return ["processed": try history().processedCount()]
+        case "clear_history":
+            try history().clear()
+            log.info("Post history cleared")
+            return ["ok": true]
         case "restore":
             guard let id = message["id"] as? String, id.count <= 30, id.allSatisfy({ $0.isNumber }) else { throw AppError(message: "Invalid post.") }
             try history().restore(id); return ["ok": true]

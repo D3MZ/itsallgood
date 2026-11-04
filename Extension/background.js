@@ -5,6 +5,8 @@ const inFlight = new Map();
 let running = 0;
 let pausedUntil = 0;
 let signingIn = false;
+let historyGeneration = 0;
+let clearingHistory = false;
 
 async function native(message) {
   const result = await browser.runtime.sendNativeMessage(HOST, message);
@@ -30,8 +32,10 @@ function notifyActivity(saved = false) {
 }
 
 function drain() {
+  if (clearingHistory) { notifyActivity(); return; }
   while (running < MAX_PARALLEL && queue.length) {
     const item = queue.shift();
+    if (item.generation !== historyGeneration) { item.resolve({ stale: true }); continue; }
     if (Date.now() < pausedUntil) {
       item.reject(new Error("Filtering is temporarily paused. Open the extension to check your connection."));
       continue;
@@ -39,10 +43,12 @@ function drain() {
     running++;
     notifyActivity();
     native({ type: "classify", post: item.post }).then(result => {
+      if (item.generation !== historyGeneration || result.stale) { item.resolve({ stale: true }); return; }
       browser.storage.local.remove("lastError").catch(() => {});
       item.resolve(result);
       if (!result.cached) notifyActivity(true);
     }, error => {
+      if (item.generation !== historyGeneration) { item.resolve({ stale: true }); return; }
       console.error("Its All Good: classification failed", error.message);
       browser.storage.local.set({ lastError: error.message }).catch(() => {});
       // Avoid repeatedly consuming requests when the account or service cannot respond.
@@ -53,15 +59,40 @@ function drain() {
   notifyActivity();
 }
 
-function classify(post) {
-  const key = `${post.id}:${post.fingerprint}`;
-  if (inFlight.has(key)) return inFlight.get(key);
+function prioritize(id) {
+  for (const item of queue) if (item.post.id === id) item.priority = 1;
+  queue.sort((a, b) => b.priority - a.priority);
+}
+
+function classify(post, priority = false) {
+  const generation = historyGeneration;
+  const key = `${generation}:${post.id}:${post.fingerprint}`;
+  if (inFlight.has(key)) {
+    if (priority) prioritize(post.id);
+    return inFlight.get(key);
+  }
   const promise = new Promise((resolve, reject) => {
-    queue.push({ post, resolve, reject });
+    queue.push({ post, resolve, reject, generation, priority: priority ? 1 : 0 });
+    if (priority) prioritize(post.id);
     drain();
   }).finally(() => inFlight.delete(key));
   inFlight.set(key, promise);
   return promise;
+}
+
+async function clearHistory() {
+  if (clearingHistory) throw new Error("History is already being cleared.");
+  clearingHistory = true;
+  historyGeneration++;
+  try {
+    const result = await native({ type: "clear_history" });
+    await notifyTabs({ type: "history_cleared" }).catch(() => {});
+    notifyActivity(true);
+    return result;
+  } finally {
+    clearingHistory = false;
+    drain();
+  }
 }
 
 async function signIn() {
@@ -86,7 +117,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
   const extensionPage = senderURL.startsWith(browser.runtime.getURL("")) || (!senderURL && !sender.tab);
   const page = /^https?:\/\/(x|twitter)\.com\//i.test(senderURL);
   if (message.type === "settings" && (page || extensionPage)) return settings(extensionPage);
-  if (message.type === "classify" && page && message.post?.id && message.post?.fingerprint) return classify(message.post);
+  if (message.type === "classify" && page && message.post?.id && message.post?.fingerprint) return classify(message.post, message.priority === true);
+  if (message.type === "prioritize" && page && /^\d{1,30}$/.test(message.id || "")) { prioritize(message.id); return Promise.resolve({ ok: true }); }
   if (!extensionPage) return;
   if (message.type === "sign_in") return signIn();
   if (message.type === "sign_out") return native({ type: "sign_out" }).then(async result => {
@@ -101,6 +133,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (message.type === "dismiss_welcome") return browser.storage.local.remove("showWelcome").then(() => ({ ok: true }));
   if (message.type === "recent") return native({ type: "recent", filter: message.filter || (message.hiddenOnly === false ? "all" : "hidden"), search: message.search || "", limit: message.limit || 100 });
   if (message.type === "stats") return native({ type: "stats" }).then(result => ({ ...result, checking: running, queued: queue.length }));
+  if (message.type === "clear_history") return clearHistory();
   if (message.type === "restore") return native({ type: "restore", id: message.id }).then(async result => {
     await notifyTabs({ type: "restore", id: message.id });
     notifyActivity(true);

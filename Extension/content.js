@@ -1,5 +1,6 @@
 (() => {
   const BATCH_SIZE = 12;
+  const MEMORY_LIMIT = 500;
   let remaining = BATCH_SIZE;
   let active = false;
   let phase = "checking";
@@ -7,6 +8,12 @@
   let refreshTimer;
   let settleTimer;
   let nextSettle = Infinity;
+  let historyRevision = 0;
+  let waitingAfterClear = false;
+  let applyTimer;
+  const pendingChanges = [];
+  const remembered = new Map();
+  const restored = new Set();
   const retryAfter = new Map();
   const articles = new Set();
   const revisions = new WeakMap();
@@ -14,10 +21,23 @@
   const settleUntil = new WeakMap();
   const jobs = new WeakMap();
   const intersection = new IntersectionObserver(entries => {
-    for (const entry of entries) {
-      if (entry.isIntersecting && !document.hidden) processPost(entry.target);
+    const distance = entry => {
+      const rect = entry.boundingClientRect;
+      return rect.bottom < 0 ? -rect.bottom : rect.top > innerHeight ? rect.top - innerHeight : 0;
+    };
+    for (const entry of entries.filter(entry => entry.isIntersecting).sort((a, b) => distance(a) - distance(b))) {
+      if (!document.hidden) processPost(entry.target);
     }
-  }, { rootMargin: "700px 0px" });
+  }, { rootMargin: "1200px 0px 3200px 0px" });
+  const viewport = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting || document.hidden || !active) continue;
+      const article = entry.target;
+      if (article.dataset.iagBusy === "1" && article.dataset.iagId) {
+        browser.runtime.sendMessage({ type: "prioritize", id: article.dataset.iagId }).catch(() => {});
+      } else processPost(article);
+    }
+  });
 
   let currentPath = location.pathname;
   const absolute = value => {
@@ -106,14 +126,50 @@
     return post;
   }
 
+  // X switches between thumbnail sizes for the same image as the page settles.
+  function revisionOf(post) {
+    const images = post.images.map(image => {
+      const url = new URL(image.url);
+      url.searchParams.delete("name");
+      url.searchParams.delete("format");
+      url.searchParams.sort();
+      return [url.href, image.alt, image.quoted];
+    });
+    return JSON.stringify([post.id, post.handle, post.author, post.text, post.quotedText, post.quotedAuthors, post.linkedPreviews, post.links, images, post.context]);
+  }
+
+  function remember(post, revision, hidden) {
+    remembered.delete(post.id);
+    remembered.set(post.id, { revision, hidden });
+    if (remembered.size > MEMORY_LIMIT) remembered.delete(remembered.keys().next().value);
+  }
+
+  // Apply nearby completions in the same frame rather than collapsing each row separately.
+  function applyTogether(change) {
+    return new Promise(resolve => {
+      pendingChanges.push({ change, resolve });
+      if (!applyTimer) applyTimer = setTimeout(() => {
+        applyTimer = null;
+        for (const item of pendingChanges.splice(0)) {
+          try { item.change(); }
+          catch (error) { console.error("Its All Good: unable to apply decision", error.message); }
+          finally { item.resolve(); }
+        }
+      }, 400);
+    });
+  }
+
   async function processPost(article) {
     if (!active || document.hidden || !article.isConnected || article.dataset.iagBusy === "1") return;
-    if (remaining <= 0) { article.dataset.iagState = "paused"; intersection.unobserve(article); return; }
+    if (waitingAfterClear || remaining <= 0) { article.dataset.iagState = "paused"; intersection.unobserve(article); viewport.unobserve(article); return; }
     const post = postFrom(article);
     if (!post || (retryAfter.get(post.id) || 0) > Date.now()) return;
+    const revision = revisionOf(post);
+    const expectedHistory = historyRevision;
     if (!post.text && !post.quotedText && !post.images.length && !post.linkedPreviews.length && !post.links.length) {
       article.dataset.iagState = "error";
       intersection.unobserve(article);
+      viewport.unobserve(article);
       return;
     }
     article.dataset.iagId = post.id;
@@ -122,13 +178,27 @@
     const job = {};
     jobs.set(article, job);
     try {
-      const result = await browser.runtime.sendMessage({ type: "classify", post });
+      const rect = article.getBoundingClientRect();
+      const priority = rect.bottom > 0 && rect.top < innerHeight;
+      const result = await browser.runtime.sendMessage({ type: "classify", post, priority });
+      if (result.stale) {
+        remaining = Math.min(BATCH_SIZE, remaining + 1);
+        if (jobs.get(article) === job) { article.dataset.iagState = "pending"; schedule(); }
+        return;
+      }
+      if (typeof result.hidden !== "boolean") throw new Error("Invalid filtering response.");
       if (result.cached) { remaining = Math.min(BATCH_SIZE, remaining + 1); schedule(); }
-      const current = postFrom(article);
-      if (jobs.get(article) !== job || !article.isConnected || current?.id !== post.id || current.fingerprint !== post.fingerprint || !active) return;
-      retryAfter.delete(post.id);
-      article.dataset.iagState = result.hidden ? "hidden" : "kept";
-      intersection.unobserve(article);
+      await applyTogether(() => {
+        const current = postFrom(article);
+        if (jobs.get(article) !== job || !article.isConnected || !current || revisionOf(current) !== revision || !active) return;
+        if (historyRevision !== expectedHistory) { schedule(); return; }
+        retryAfter.delete(post.id);
+        const hidden = restored.has(post.id) ? false : result.hidden;
+        remember(post, revision, hidden);
+        article.dataset.iagState = hidden ? "hidden" : "kept";
+        intersection.unobserve(article);
+        viewport.unobserve(article);
+      });
     } catch (error) {
       remaining = Math.min(BATCH_SIZE, remaining + 1);
       if (jobs.get(article) === job) {
@@ -136,6 +206,7 @@
         retryAfter.set(post.id, Date.now() + 30_000);
         article.dataset.iagState = "error";
         intersection.unobserve(article);
+        viewport.unobserve(article);
       }
     } finally {
       if (jobs.get(article) === job) {
@@ -144,6 +215,7 @@
         if (!active || phase !== "active") {
           delete article.dataset.iagState;
           intersection.unobserve(article);
+          viewport.unobserve(article);
         }
       }
     }
@@ -151,6 +223,7 @@
 
   function resetArticle(article) {
     intersection.unobserve(article);
+    viewport.unobserve(article);
     delete article.dataset.iagState;
     delete article.dataset.iagId;
     delete article.dataset.iagBusy;
@@ -166,14 +239,14 @@
   }
 
   function syncRoute() {
-    if (currentPath !== location.pathname) { resetFeed(); remaining = BATCH_SIZE; currentPath = location.pathname; }
+    if (currentPath !== location.pathname) { resetFeed(); remaining = BATCH_SIZE; waitingAfterClear = false; currentPath = location.pathname; }
     syncMode();
   }
 
   function scan() {
     scheduled = false;
     syncRoute();
-    if (phase === "off") { resetFeed(); return; }
+    if (phase === "off") { resetFeed(); remembered.clear(); return; }
     if (!active || phase !== "active") return;
     for (const article of document.querySelectorAll('article[data-testid="tweet"]')) {
       articles.add(article);
@@ -184,30 +257,46 @@
         continue;
       }
       unreadableSince.delete(article);
-      const revision = `${post.id}:${post.fingerprint}`;
+      const revision = revisionOf(post);
       if (revisions.get(article) !== revision) {
         resetArticle(article);
         revisions.set(article, revision);
         settleUntil.set(article, Date.now() + 900);
       }
       article.dataset.iagId = post.id;
+      const cached = remembered.get(post.id);
+      if (cached?.revision === revision) {
+        const state = cached.hidden ? "hidden" : "kept";
+        if (article.dataset.iagState !== state) article.dataset.iagState = state;
+        intersection.unobserve(article);
+        viewport.unobserve(article);
+        continue;
+      }
       if (!post.text && !post.quotedText && !post.images.length && !post.linkedPreviews.length && !post.links.length) {
         article.dataset.iagState = "error";
         intersection.unobserve(article);
+        viewport.unobserve(article);
         continue;
       }
       if (article.dataset.iagState === "error") {
         if ((retryAfter.get(post.id) || 0) > Date.now()) continue;
         delete article.dataset.iagState;
       }
+      if (waitingAfterClear && article.dataset.iagState !== "kept" && article.dataset.iagState !== "hidden") {
+        article.dataset.iagState = "paused";
+        intersection.unobserve(article);
+        viewport.unobserve(article);
+        continue;
+      }
       if (article.dataset.iagState === "paused" && remaining > 0) delete article.dataset.iagState;
       if (!article.dataset.iagState) article.dataset.iagState = "pending";
       if (article.dataset.iagState !== "pending" || article.dataset.iagBusy) continue;
-      if (remaining <= 0) { article.dataset.iagState = "paused"; intersection.unobserve(article); continue; }
-      if (document.hidden) { intersection.unobserve(article); continue; }
+      if (remaining <= 0) { article.dataset.iagState = "paused"; intersection.unobserve(article); viewport.unobserve(article); continue; }
+      if (document.hidden) { intersection.unobserve(article); viewport.unobserve(article); continue; }
       const due = settleUntil.get(article) || 0;
       if (due > Date.now()) { scheduleSettling(due); continue; }
       intersection.observe(article);
+      viewport.observe(article);
     }
     for (const article of articles) {
       if (!article.isConnected) { resetArticle(article); articles.delete(article); }
@@ -234,7 +323,7 @@
       const settings = await browser.runtime.sendMessage({ type: "settings" });
       const wasActive = active;
       active = !!(settings.enabled && settings.signedIn);
-      if (active && !wasActive) remaining = BATCH_SIZE;
+      if (active && !wasActive) { remaining = BATCH_SIZE; waitingAfterClear = false; }
       phase = active ? "active" : "off";
     } catch (error) {
       active = false;
@@ -250,8 +339,12 @@
   browser.runtime.onMessage.addListener(message => {
     if (message?.type === "refresh") refresh();
     if (message?.type === "restore") {
+      restored.add(message.id);
+      const cached = remembered.get(message.id);
+      if (cached) cached.hidden = false;
       for (const article of articles) if (article.dataset.iagId === message.id) article.dataset.iagState = "kept";
     }
+    if (message?.type === "history_cleared") { historyRevision++; waitingAfterClear = true; remembered.clear(); restored.clear(); schedule(); }
   });
   const observer = new MutationObserver(mutations => {
     syncRoute();
@@ -264,7 +357,7 @@
       }
       for (const article of changed) {
         const post = postFrom(article);
-        if (!post || revisions.get(article) !== `${post.id}:${post.fingerprint}`) resetArticle(article);
+        if (!post || revisions.get(article) !== revisionOf(post)) resetArticle(article);
       }
     }
     schedule();
@@ -284,6 +377,7 @@
       if (event.target instanceof Element && event.target.closest('input, textarea, [contenteditable="true"], [role="textbox"]')) return;
     }
     remaining = BATCH_SIZE;
+    waitingAfterClear = false;
     schedule();
   };
   window.addEventListener("wheel", continueOnScroll, { passive: true });
