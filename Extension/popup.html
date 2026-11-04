@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="popup.css">
+  <script src="popup.js" defer></script>
+  <title>It's All Good</title>
+</head>
+<body>
+  <header>
+    <div><h1>It's All Good</h1><p id="subtitle">Filter X posts</p></div>
+    <label class="switch" title="Filter feed"><input id="enabled" type="checkbox" aria-label="Filter feed"><span></span></label>
+  </header>
+  <main>
+    <section id="signed-out" hidden>
+      <h2>Use your ChatGPT plan</h2>
+      <p>Connect your account to filter posts with Luna.</p>
+      <button id="sign-in" class="primary" data-oai-siwc-button><img class="mark-white" src="chatgpt-white.svg" alt=""><img class="mark-black" src="chatgpt-black.svg" alt="">Continue with ChatGPT</button>
+    </section>
+    <section id="signed-in" hidden>
+      <div class="account">
+        <div><strong id="account"></strong><small>Using ChatGPT plan · <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage</a></small></div>
+        <button id="sign-out" class="text-button">Sign out</button>
+      </div>
+      <p id="model" class="model">Luna · Low thinking</p>
+    </section>
+    <section id="welcome" hidden>
+      <h2>You're using your ChatGPT plan</h2>
+      <p>Eligible requests use your ChatGPT plan. <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage</a></p>
+      <button id="got-it" class="text-button">Got it</button>
+    </section>
+    <section id="review">
+      <div class="section-heading"><h2>Posts</h2><div class="segments"><button id="hidden-tab" class="selected">Hidden</button><button id="all-tab">All</button></div></div>
+      <div id="posts" aria-live="polite"></div>
+    </section>
+    <p id="error" class="error" role="status" hidden></p>
+  </main>
+</body>
+</html>

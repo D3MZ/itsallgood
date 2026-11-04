@@ -1,0 +1,23 @@
+# Local agent memory and design research
+AGENTS.md
+CLAUDE.md
+.codex/
+.claude/
+.cursor/
+.pi/
+design-references/
+
+# Xcode and local state
+.DS_Store
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcuserdatad/
+.env
+.env.*
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log

@@ -1,0 +1,3 @@
+article[data-testid="tweet"][data-iag-state="pending"] { visibility: hidden !important; }
+article[data-testid="tweet"][data-iag-state="hidden"] { display: none !important; }
+div[data-testid="cellInnerDiv"]:has(article[data-testid="tweet"][data-iag-state="hidden"]) { display: none !important; }
