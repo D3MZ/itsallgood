@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="popup.css">
   <script src="popup.js" defer></script>
+  <script src="popup-resize.js" defer></script>
   <title>It's All Good</title>
 </head>
 <body>
@@ -20,18 +21,16 @@
     </section>
     <section id="signed-in" hidden>
       <div class="account">
-        <div><strong id="account"></strong><small>Using ChatGPT plan · <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage</a></small></div>
+        <details class="account-details">
+          <summary><strong id="account"></strong></summary>
+          <div class="account-info"><span id="account-email"></span><span>Using ChatGPT plan</span><span id="model">Luna · Low thinking</span><a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage</a></div>
+        </details>
+        <a class="text-button" href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer" aria-label="Manage ChatGPT usage">Usage</a>
         <button id="sign-out" class="text-button">Sign out</button>
       </div>
-      <p id="model" class="model">Luna · Low thinking</p>
-    </section>
-    <section id="welcome" hidden>
-      <h2>You're using your ChatGPT plan</h2>
-      <p>Eligible requests use your ChatGPT plan. <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage</a></p>
-      <button id="got-it" class="text-button">Got it</button>
     </section>
     <section id="review">
-      <div class="section-heading"><h2>Posts</h2><div id="filters" class="segments" role="tablist" aria-label="Post visibility"><button id="hidden-tab" class="selected" role="tab" aria-selected="true" aria-controls="posts">Hidden</button><button id="visible-tab" role="tab" aria-selected="false" aria-controls="posts" tabindex="-1">Visible</button><button id="all-tab" role="tab" aria-selected="false" aria-controls="posts" tabindex="-1">All</button></div></div>
+      <div class="section-heading"><h2>Posts</h2><div id="filters" class="segments" role="tablist" aria-label="Post visibility"><button id="hidden-tab" class="selected" role="tab" aria-selected="true" aria-controls="posts">Hidden <span id="hidden-count" class="segment-count">–</span></button><button id="visible-tab" role="tab" aria-selected="false" aria-controls="posts" tabindex="-1">Visible <span id="visible-count" class="segment-count">–</span></button><button id="all-tab" role="tab" aria-selected="false" aria-controls="posts" tabindex="-1">All <span id="all-count" class="segment-count">–</span></button></div></div>
       <div role="search"><input id="search" type="search" placeholder="Search posts" aria-label="Search posts" maxlength="200" autocomplete="off"></div>
       <div class="activity" aria-label="Filtering activity"><span title="Posts reviewed under the current filter">Processed <strong id="processed-count">–</strong></span><span>Checking <strong id="checking-count">0</strong></span><span>Queued <strong id="queue-count">0</strong></span><button id="clear-history" class="text-button clear-history" aria-controls="clear-confirmation" aria-expanded="false">Clear History…</button></div>
       <div id="clear-confirmation" class="clear-confirmation" role="group" aria-labelledby="clear-title" hidden>
@@ -44,5 +43,13 @@
     <p id="error" class="error" role="status" hidden></p>
     <button id="retry-session" class="text-button retry" hidden>Try Again</button>
   </main>
+  <button id="resize-popup" type="button" aria-label="Resize panel with arrow keys" title="Drag to resize, or use the arrow keys"></button>
+  <div id="welcome" role="dialog" aria-modal="true" aria-labelledby="welcome-title" aria-describedby="welcome-description" hidden>
+    <div class="welcome-card">
+      <h2 id="welcome-title">Using your ChatGPT plan</h2>
+      <p id="welcome-description">Eligible requests use your ChatGPT plan. <a id="welcome-usage" href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage</a></p>
+      <button id="got-it" class="text-button">Got it</button>
+    </div>
+  </div>
 </body>
 </html>

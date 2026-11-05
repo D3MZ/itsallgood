@@ -1,7 +1,10 @@
 (() => {
-  const BATCH_SIZE = 12;
+  const BATCH_SIZE = 24;
   const MEMORY_LIMIT = 500;
+  const EXPANSION_TIMEOUT = 30_000;
+  const EXPANSION_SETTLE = 2_000;
   let remaining = BATCH_SIZE;
+  let visibleRescues = 1;
   let active = false;
   let phase = "checking";
   let scheduled = false;
@@ -17,6 +20,8 @@
   const retryAfter = new Map();
   const articles = new Set();
   const revisions = new WeakMap();
+  const snapshots = new WeakMap();
+  const expansions = new WeakMap();
   const unreadableSince = new WeakMap();
   const settleUntil = new WeakMap();
   const jobs = new WeakMap();
@@ -28,14 +33,19 @@
     for (const entry of entries.filter(entry => entry.isIntersecting).sort((a, b) => distance(a) - distance(b))) {
       if (!document.hidden) processPost(entry.target);
     }
-  }, { rootMargin: "1200px 0px 3200px 0px" });
+  }, { rootMargin: "2400px 0px 3200px 0px" });
   const viewport = new IntersectionObserver(entries => {
     for (const entry of entries) {
-      if (!entry.isIntersecting || document.hidden || !active) continue;
+      if (document.hidden || !active) continue;
       const article = entry.target;
+      if (entry.isIntersecting && article.dataset.iagBusy !== "1" && !waitingAfterClear && remaining <= 0 && visibleRescues > 0) {
+        remaining = BATCH_SIZE;
+        visibleRescues--;
+        schedule();
+      }
       if (article.dataset.iagBusy === "1" && article.dataset.iagId) {
-        browser.runtime.sendMessage({ type: "prioritize", id: article.dataset.iagId }).catch(() => {});
-      } else processPost(article);
+        browser.runtime.sendMessage({ type: entry.isIntersecting ? "prioritize" : "deprioritize", id: article.dataset.iagId }).catch(() => {});
+      } else if (entry.isIntersecting) processPost(article);
     }
   });
 
@@ -160,16 +170,22 @@
           catch (error) { console.error("Its All Good: unable to apply decision", error.message); }
           finally { item.resolve(); }
         }
-      }, 400);
+      }, 150);
     });
   }
 
   async function processPost(article) {
     if (!active || document.hidden || !article.isConnected || article.dataset.iagBusy === "1") return;
-    if (waitingAfterClear || remaining <= 0) { article.dataset.iagState = "paused"; intersection.unobserve(article); viewport.unobserve(article); return; }
-    const post = postFrom(article);
+    if (waitingAfterClear || remaining <= 0) {
+      article.dataset.iagState = "paused";
+      intersection.unobserve(article);
+      if (waitingAfterClear) viewport.unobserve(article); else viewport.observe(article);
+      return;
+    }
+    const snapshot = snapshots.get(article);
+    const post = snapshot?.post || postFrom(article);
     if (!post || (retryAfter.get(post.id) || 0) > Date.now()) return;
-    const revision = revisionOf(post);
+    const revision = snapshot?.revision || revisionOf(post);
     const expectedHistory = historyRevision;
     if (!post.text && !post.quotedText && !post.images.length && !post.linkedPreviews.length && !post.links.length) {
       article.dataset.iagState = "error";
@@ -226,13 +242,38 @@
     }
   }
 
+  function forgetExpansion(article) {
+    const expansion = expansions.get(article);
+    if (!expansion) return;
+    clearTimeout(expansion.timeout);
+    clearTimeout(expansion.settleTimer);
+    expansions.delete(article);
+  }
+
+  // Carry the visible decision over to the expanded revision of the same post.
+  function preserveExpansion(article, post, revision) {
+    const expansion = expansions.get(article);
+    if (!expansion || article.dataset.iagState !== "kept" || post.id !== expansion.id || post.handle !== expansion.handle) return false;
+    revisions.set(article, revision);
+    snapshots.set(article, { post, revision });
+    remember(post, revision, false);
+    if (expansion.expanded || post.text !== expansion.text || post.quotedText !== expansion.quotedText) {
+      expansion.expanded = true;
+      clearTimeout(expansion.settleTimer);
+      expansion.settleTimer = setTimeout(() => forgetExpansion(article), EXPANSION_SETTLE);
+    }
+    return true;
+  }
+
   function resetArticle(article) {
+    forgetExpansion(article);
     intersection.unobserve(article);
     viewport.unobserve(article);
     delete article.dataset.iagState;
     delete article.dataset.iagId;
     delete article.dataset.iagBusy;
     revisions.delete(article);
+    snapshots.delete(article);
     unreadableSince.delete(article);
     settleUntil.delete(article);
     jobs.delete(article);
@@ -244,8 +285,10 @@
   }
 
   function syncRoute() {
-    if (currentPath !== location.pathname) { resetFeed(); remaining = BATCH_SIZE; waitingAfterClear = false; currentPath = location.pathname; }
+    const changed = currentPath !== location.pathname;
+    if (changed) { resetFeed(); remaining = BATCH_SIZE; visibleRescues = 1; waitingAfterClear = false; currentPath = location.pathname; }
     syncMode();
+    return changed;
   }
 
   function scan() {
@@ -255,6 +298,7 @@
     if (!active || phase !== "active") return;
     for (const article of document.querySelectorAll('article[data-testid="tweet"]')) {
       articles.add(article);
+      if (article.dataset.iagState === "kept" || article.dataset.iagState === "hidden") continue;
       const post = postFrom(article);
       if (!post) {
         if (!unreadableSince.has(article)) unreadableSince.set(article, Date.now());
@@ -266,9 +310,10 @@
       if (revisions.get(article) !== revision) {
         resetArticle(article);
         revisions.set(article, revision);
-        settleUntil.set(article, Date.now() + 900);
+        settleUntil.set(article, Date.now() + 400);
       }
-      article.dataset.iagId = post.id;
+      snapshots.set(article, { post, revision });
+      if (article.dataset.iagId !== post.id) article.dataset.iagId = post.id;
       const cached = remembered.get(post.id);
       if (cached?.revision === revision) {
         const state = cached.hidden ? "hidden" : "kept";
@@ -296,7 +341,7 @@
       if (article.dataset.iagState === "paused" && remaining > 0) delete article.dataset.iagState;
       if (!article.dataset.iagState) article.dataset.iagState = "pending";
       if (article.dataset.iagState !== "pending" || article.dataset.iagBusy) continue;
-      if (remaining <= 0) { article.dataset.iagState = "paused"; intersection.unobserve(article); viewport.unobserve(article); continue; }
+      if (remaining <= 0) { article.dataset.iagState = "paused"; intersection.unobserve(article); if (!document.hidden) viewport.observe(article); continue; }
       if (document.hidden) { intersection.unobserve(article); viewport.unobserve(article); continue; }
       const due = settleUntil.get(article) || 0;
       if (due > Date.now()) { scheduleSettling(due); continue; }
@@ -309,7 +354,7 @@
   }
 
   function schedule() {
-    if (!scheduled) { scheduled = true; setTimeout(scan, 0); }
+    if (!scheduled) { scheduled = true; setTimeout(scan, 40); }
   }
 
   function scheduleSettling(due) {
@@ -328,7 +373,7 @@
       const settings = await send("settings");
       const wasActive = active;
       active = !!(settings.enabled && settings.signedIn);
-      if (active && !wasActive) { remaining = BATCH_SIZE; waitingAfterClear = false; }
+      if (active && !wasActive) { remaining = BATCH_SIZE; visibleRescues = 1; waitingAfterClear = false; }
       phase = active ? "active" : "off";
     } catch (error) {
       active = false;
@@ -351,42 +396,79 @@
     if (message?.type === "history_cleared") { historyRevision++; waitingAfterClear = true; remembered.clear(); restored.clear(); schedule(); }
   });
   const observer = new MutationObserver(mutations => {
-    syncRoute();
+    let relevant = syncRoute();
     if (active) {
       const changed = new Set();
       for (const mutation of mutations) {
         const node = mutation.target.nodeType === Node.ELEMENT_NODE ? mutation.target : mutation.target.parentElement;
         const article = node?.closest('article[data-testid="tweet"]');
-        if (article && (article.dataset.iagState === "kept" || article.dataset.iagState === "hidden")) changed.add(article);
+        if (article) {
+          relevant = true;
+          snapshots.delete(article);
+          if (article.dataset.iagState === "kept" || article.dataset.iagState === "hidden") changed.add(article);
+        } else if (mutation.type === "childList") {
+          for (const child of mutation.addedNodes) {
+            if (child.nodeType !== Node.ELEMENT_NODE) continue;
+            const added = [...child.querySelectorAll('article[data-testid="tweet"]')];
+            if (child.matches('article[data-testid="tweet"]')) added.push(child);
+            for (const post of added) {
+              relevant = true;
+              snapshots.delete(post);
+              if (post.dataset.iagState === "kept" || post.dataset.iagState === "hidden") changed.add(post);
+            }
+          }
+          for (const child of mutation.removedNodes) {
+            if (child.nodeType === Node.ELEMENT_NODE && (child.matches('article[data-testid="tweet"]') || child.querySelector('article[data-testid="tweet"]'))) { relevant = true; break; }
+          }
+        }
       }
+      // A recycled or edited post must be masked before the next paint.
       for (const article of changed) {
         const post = postFrom(article);
-        if (!post || revisions.get(article) !== revisionOf(post)) resetArticle(article);
+        const revision = post && revisionOf(post);
+        if (!post || (revisions.get(article) !== revision && !preserveExpansion(article, post, revision))) resetArticle(article);
       }
     }
-    schedule();
+    if (relevant) schedule();
   });
   observer.observe(document, { subtree: true, childList: true, characterData: true, attributes: true,
-    attributeFilter: ["href", "datetime", "src", "srcset", "poster"] });
+    attributeFilter: ["href", "datetime", "src", "srcset", "poster", "alt", "title", "role", "data-testid"] });
+  // Expanding an already visible post should not hide it while its full text loads.
+  window.addEventListener("click", event => {
+    const control = event.target instanceof Element && event.target.closest('[data-testid="tweet-text-show-more-link"]');
+    const article = control && control.closest('article[data-testid="tweet"]');
+    if (!active || !article || article.dataset.iagState !== "kept") return;
+    const post = postFrom(article);
+    if (!post || post.id !== article.dataset.iagId) return;
+    forgetExpansion(article);
+    const expansion = { id: post.id, handle: post.handle, text: post.text, quotedText: post.quotedText };
+    expansion.timeout = setTimeout(() => forgetExpansion(article), EXPANSION_TIMEOUT);
+    expansions.set(article, expansion);
+  }, true);
   window.addEventListener("popstate", () => { syncRoute(); schedule(); });
   window.addEventListener("pageshow", refresh);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && phase === "checking") refresh();
     else schedule();
   });
-  const continueOnScroll = event => {
+  const continueOnInteraction = event => {
     if (!event.isTrusted || !active) return;
     if (event.type === "keydown") {
-      if (!["ArrowDown", "PageDown", "End", " "].includes(event.key)) return;
+      if (!["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ", "."].includes(event.key)) return;
       if (event.target instanceof Element && event.target.closest('input, textarea, [contenteditable="true"], [role="textbox"]')) return;
     }
+    if (event.type === "click" && !(event.target instanceof Element && event.target.closest('[data-testid="primaryColumn"]'))) return;
+    if (event.type === "pointerdown" && event.clientX < document.documentElement.clientWidth - 20) return;
     remaining = BATCH_SIZE;
+    visibleRescues = 1;
     waitingAfterClear = false;
     schedule();
   };
-  window.addEventListener("wheel", continueOnScroll, { passive: true });
-  window.addEventListener("touchmove", continueOnScroll, { passive: true });
-  window.addEventListener("keydown", continueOnScroll);
-  setInterval(schedule, 2000);
+  window.addEventListener("wheel", continueOnInteraction, { passive: true });
+  window.addEventListener("touchmove", continueOnInteraction, { passive: true });
+  window.addEventListener("pointerdown", continueOnInteraction, { passive: true });
+  window.addEventListener("click", continueOnInteraction, true);
+  window.addEventListener("keydown", continueOnInteraction);
+  setInterval(schedule, 5000);
   refresh();
 })();

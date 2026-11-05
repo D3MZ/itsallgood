@@ -49,6 +49,8 @@
 		A1000000000000000000000B /* chatgpt-black.svg in Resources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000F /* chatgpt-black.svg */; };
 		A1000000000000000000000C /* chatgpt-white.svg in Resources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000E /* chatgpt-white.svg */; };
 		A1000000000000000000000D /* chatgpt-black.svg in Resources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000000F /* chatgpt-black.svg */; };
+		A10000000000000000000010 /* popup-resize.js in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* popup-resize.js */; };
+		A10000000000000000000011 /* popup-resize.js in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* popup-resize.js */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -122,6 +124,7 @@
 		19F05006309BA80600373460 /* content.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = content.js; path = ../../Extension/content.js; sourceTree = "<group>"; };
 		A10000000000000000000005 /* popup.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = popup.js; path = ../../Extension/popup.js; sourceTree = "<group>"; };
 		A10000000000000000000006 /* popup.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; name = popup.css; path = ../../Extension/popup.css; sourceTree = "<group>"; };
+		A10000000000000000000012 /* popup-resize.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = "popup-resize.js"; path = "../../Extension/popup-resize.js"; sourceTree = "<group>"; };
 		A10000000000000000000009 /* icon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = icon.png; path = ../../Extension/icon.png; sourceTree = "<group>"; };
 		A1000000000000000000000E /* chatgpt-white.svg */ = {isa = PBXFileReference; lastKnownFileType = image.svg; name = "chatgpt-white.svg"; path = "../../Extension/chatgpt-white.svg"; sourceTree = "<group>"; };
 		A1000000000000000000000F /* chatgpt-black.svg */ = {isa = PBXFileReference; lastKnownFileType = image.svg; name = "chatgpt-black.svg"; path = "../../Extension/chatgpt-black.svg"; sourceTree = "<group>"; };
@@ -258,6 +261,7 @@
 				19F05003309BA80600373460 /* background.js */,
 				19F05004309BA80600373460 /* popup.html */,
 				A10000000000000000000005 /* popup.js */,
+				A10000000000000000000012 /* popup-resize.js */,
 				A10000000000000000000006 /* popup.css */,
 				A10000000000000000000009 /* icon.png */,
 				A1000000000000000000000E /* chatgpt-white.svg */,
@@ -434,6 +438,7 @@
 				19F0500D309BA80600373460 /* background.js in Resources */,
 				19F0500E309BA80600373460 /* popup.html in Resources */,
 				A10000000000000000000001 /* popup.js in Resources */,
+				A10000000000000000000010 /* popup-resize.js in Resources */,
 				A10000000000000000000002 /* popup.css in Resources */,
 				A10000000000000000000007 /* icon.png in Resources */,
 				A1000000000000000000000A /* chatgpt-white.svg in Resources */,
@@ -451,6 +456,7 @@
 				19F05008309BA80600373460 /* background.js in Resources */,
 				19F05009309BA80600373460 /* popup.html in Resources */,
 				A10000000000000000000003 /* popup.js in Resources */,
+				A10000000000000000000011 /* popup-resize.js in Resources */,
 				A10000000000000000000004 /* popup.css in Resources */,
 				A10000000000000000000008 /* icon.png in Resources */,
 				A1000000000000000000000C /* chatgpt-white.svg in Resources */,

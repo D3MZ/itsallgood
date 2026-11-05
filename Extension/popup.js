@@ -28,11 +28,12 @@ async function loadSettings(retrySession = false) {
     $("signed-out").hidden = state.signedIn;
     $("enabled").checked = state.enabled;
     $("enabled").disabled = !state.signedIn;
-    $("welcome").hidden = !(state.signedIn && state.showWelcome);
     if (state.signedIn) {
       $("account").textContent = state.email || "ChatGPT";
+      $("account-email").textContent = state.email || "ChatGPT";
       $("model").textContent = `${state.model || "Luna"} · Low thinking`;
     }
+    setWelcomeOpen(state.signedIn && state.showWelcome);
     clearError();
     $("retry-session").hidden = true;
     if (state.lastError) showError(state.lastError);
@@ -56,8 +57,12 @@ async function loadPosts() {
   const filter = selectedFilter;
   const search = searchTerm;
   try {
-    const { posts, hasMore } = await send("recent", { filter, search, limit: postLimit });
+    const { posts, hasMore, counts } = await send("recent", { filter, search, limit: postLimit });
     if (request !== postRequest) return;
+    for (const [, name] of filters) {
+      const count = counts?.[name];
+      if (Number.isSafeInteger(count) && count >= 0) $(`${name}-count`).textContent = count > 999 ? "999+" : String(count);
+    }
     const list = $("posts");
     const contents = document.createDocumentFragment();
     if (!posts.length) {
@@ -115,6 +120,20 @@ async function loadStats() {
   } catch (error) { if (request === statsRequest) showError(error); }
 }
 
+const accountDetails = document.querySelector(".account-details");
+document.addEventListener("click", event => {
+  if (!accountDetails.contains(event.target)) accountDetails.open = false;
+});
+accountDetails.addEventListener("focusout", event => {
+  if (!accountDetails.contains(event.relatedTarget)) accountDetails.open = false;
+});
+accountDetails.addEventListener("keydown", event => {
+  if (event.key === "Escape" && accountDetails.open) {
+    event.preventDefault();
+    accountDetails.open = false;
+  }
+});
+
 $("retry-session").addEventListener("click", async () => {
   $("retry-session").disabled = true;
   try { await loadSettings(true); }
@@ -140,9 +159,26 @@ $("sign-out").addEventListener("click", async () => {
     if (result.warning) showError(result.warning);
   } catch (error) { showError(error); }
 });
-$("got-it").addEventListener("click", async () => {
-  try { await send("dismiss_welcome"); $("welcome").hidden = true; }
+function setWelcomeOpen(open) {
+  if ($("welcome").hidden === !open) return;
+  $("welcome").hidden = !open;
+  if (open) $("got-it").focus();
+  else if (!$("signed-in").hidden) $("sign-out").focus();
+}
+async function dismissWelcome() {
+  $("got-it").disabled = true;
+  try { await send("dismiss_welcome"); setWelcomeOpen(false); }
   catch (error) { showError(error); }
+  finally { $("got-it").disabled = false; }
+}
+$("got-it").addEventListener("click", dismissWelcome);
+$("welcome").addEventListener("keydown", event => {
+  if (event.key === "Escape") { event.preventDefault(); dismissWelcome(); }
+  if (event.key !== "Tab") return;
+  const first = $("welcome-usage");
+  const last = $("got-it");
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 });
 function showClearConfirmation(show) {
   $("clear-confirmation").hidden = !show;

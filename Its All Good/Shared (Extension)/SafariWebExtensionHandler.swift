@@ -418,6 +418,7 @@ private final class SignInFlow: @unchecked Sendable {
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 private enum HistoryFilter: String { case hidden, visible, all }
 private final class Store {
+    private static let searchPredicate = "(instr(lower('@' || handle),lower(?1))>0 OR instr(lower(author),lower(?1))>0 OR instr(lower(content),lower(?1))>0 OR instr(lower(quoted_text),lower(?1))>0 OR instr(lower(reason),lower(?1))>0 OR instr(lower(url),lower(?1))>0 OR instr(lower(fingerprint),lower(?1))>0)"
     private var db: OpaquePointer?
     init() throws {
         let url = try dataDirectory().appendingPathComponent("posts.sqlite")
@@ -481,9 +482,7 @@ private final class Store {
         if filter == .hidden { conditions.append("hidden=1 AND restored=0") }
         if filter == .visible { conditions.append("(hidden=0 OR restored=1)") }
         let query = String(search.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
-        if !query.isEmpty {
-            conditions.append("(instr(lower('@' || handle),lower(?1))>0 OR instr(lower(author),lower(?1))>0 OR instr(lower(content),lower(?1))>0 OR instr(lower(quoted_text),lower(?1))>0 OR instr(lower(reason),lower(?1))>0 OR instr(lower(url),lower(?1))>0 OR instr(lower(fingerprint),lower(?1))>0)")
-        }
+        if !query.isEmpty { conditions.append(Self.searchPredicate) }
         let whereClause = conditions.isEmpty ? "" : "WHERE " + conditions.joined(separator: " AND ")
         let s = try statement("SELECT id,url,handle,content,posted_at,images_json,hidden,reason,restored,fingerprint FROM posts \(whereClause) ORDER BY classified_at DESC LIMIT ?2")
         defer { sqlite3_finalize(s) }
@@ -496,6 +495,29 @@ private final class Store {
             posts.append(["id": text(s, 0), "url": text(s, 1), "handle": text(s, 2), "text": text(s, 3), "postedAt": text(s, 4), "imageCount": images.count, "hidden": sqlite3_column_int(s, 6) != 0, "reason": text(s, 7), "restored": sqlite3_column_int(s, 8) != 0, "outdated": !fingerprint.hasPrefix("[3,"), "incomplete": !fingerprint.hasPrefix("[2,") && !fingerprint.hasPrefix("[3,")])
         }
         return posts
+    }
+    private func counts(search: String) throws -> [String: Int] {
+        let query = String(search.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
+        let whereClause = query.isEmpty ? "" : "WHERE " + Self.searchPredicate
+        let s = try statement("SELECT COUNT(*), COALESCE(SUM(CASE WHEN hidden=1 AND restored=0 THEN 1 ELSE 0 END),0) FROM posts \(whereClause)")
+        defer { sqlite3_finalize(s) }
+        if !query.isEmpty { bind(query, 1, s) }
+        guard sqlite3_step(s) == SQLITE_ROW else { throw AppError(message: "Post history error.") }
+        let total = Int(sqlite3_column_int64(s, 0))
+        let hidden = Int(sqlite3_column_int64(s, 1))
+        return ["hidden": hidden, "visible": total - hidden, "all": total]
+    }
+    func review(filter: HistoryFilter, search: String, limit: Int) throws -> (posts: [[String: Any]], counts: [String: Int]) {
+        try exec("BEGIN")
+        do {
+            let posts = try recent(filter: filter, search: search, limit: limit)
+            let counts = try counts(search: search)
+            try exec("COMMIT")
+            return (posts, counts)
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
+        }
     }
     func processedCount() throws -> Int {
         let s = try statement("SELECT COUNT(*) FROM posts WHERE substr(fingerprint,1,3)='[3,'")
@@ -656,10 +678,11 @@ private actor Backend {
             let legacyFilter = (message["hiddenOnly"] as? Bool ?? true) ? HistoryFilter.hidden : .all
             let filter = (message["filter"] as? String).flatMap(HistoryFilter.init(rawValue:)) ?? legacyFilter
             let limit = max(1, min(message["limit"] as? Int ?? 100, 100_000))
-            var posts = try history().recent(filter: filter, search: message["search"] as? String ?? "", limit: limit + 1)
+            let review = try history().review(filter: filter, search: message["search"] as? String ?? "", limit: limit + 1)
+            var posts = review.posts
             let hasMore = posts.count > limit
             if hasMore { posts.removeLast() }
-            return ["posts": posts, "hasMore": hasMore]
+            return ["posts": posts, "hasMore": hasMore, "counts": review.counts]
         case "stats": return ["processed": try history().processedCount()]
         case "clear_history":
             try history().clear()

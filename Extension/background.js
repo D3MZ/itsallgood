@@ -15,7 +15,7 @@ async function native(message) {
 }
 
 async function settings(retrySession = false) {
-  const stored = await browser.storage.local.get(["enabled", "lastError", "showWelcome"]);
+  const stored = await browser.storage.local.get(["enabled", "lastError", "firstSignInNotice"]);
   const status = await native({ type: "status", retrySession });
   if (/keychain/i.test(stored.lastError || "")) {
     await browser.storage.local.remove("lastError");
@@ -27,7 +27,7 @@ async function settings(retrySession = false) {
     pausedUntil = 0;
     await notifyTabs({ type: "refresh" }).catch(() => {});
   }
-  return { ...status, enabled: stored.enabled !== false, lastError: stored.lastError, showWelcome: stored.showWelcome };
+  return { ...status, enabled: stored.enabled !== false, lastError: stored.lastError, showWelcome: stored.firstSignInNotice };
 }
 
 function reply(promise) {
@@ -72,8 +72,8 @@ function drain() {
   notifyActivity();
 }
 
-function prioritize(id) {
-  for (const item of queue) if (item.post.id === id) item.priority = 1;
+function prioritize(id, priority = 1) {
+  for (const item of queue) if (item.post.id === id) item.priority = priority;
   queue.sort((a, b) => b.priority - a.priority);
 }
 
@@ -114,7 +114,7 @@ async function signIn() {
   try {
     await native({ type: "sign_in" });
     const { welcomed } = await browser.storage.local.get("welcomed");
-    if (!welcomed) await browser.storage.local.set({ showWelcome: true, welcomed: true });
+    if (!welcomed) await browser.storage.local.set({ firstSignInNotice: true, welcomed: true });
     await browser.storage.local.remove("lastError");
     pausedUntil = 0;
     await notifyTabs({ type: "refresh" });
@@ -133,11 +133,15 @@ browser.runtime.onMessage.addListener((message, sender) => {
   const respond = value => message.protocol === 2 ? reply(value) : value;
   if (message.type === "settings" && (page || extensionPage)) return respond(settings());
   if (message.type === "classify" && page && message.post?.id && message.post?.fingerprint) return respond(classify(message.post, message.priority === true));
-  if (message.type === "prioritize" && page && /^\d{1,30}$/.test(message.id || "")) { prioritize(message.id); return Promise.resolve({ ok: true }); }
+  if ((message.type === "prioritize" || message.type === "deprioritize") && page && /^\d{1,30}$/.test(message.id || "")) {
+    prioritize(message.id, message.type === "prioritize" ? 1 : 0);
+    return Promise.resolve({ ok: true });
+  }
   if (!extensionPage) return;
   if (message.type === "retry_session") return respond(settings(true));
   if (message.type === "sign_in") return respond(signIn());
   if (message.type === "sign_out") return respond(native({ type: "sign_out" }).then(async result => {
+    await browser.storage.local.remove(["firstSignInNotice", "showWelcome"]);
     await notifyTabs({ type: "refresh" });
     return result;
   }));
@@ -146,7 +150,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
     await notifyTabs({ type: "refresh" });
     return { ok: true };
   }));
-  if (message.type === "dismiss_welcome") return respond(browser.storage.local.remove("showWelcome").then(() => ({ ok: true })));
+  if (message.type === "dismiss_welcome") return respond(browser.storage.local.remove(["firstSignInNotice", "showWelcome"]).then(() => ({ ok: true })));
   if (message.type === "recent") return respond(native({ type: "recent", filter: message.filter || (message.hiddenOnly === false ? "all" : "hidden"), search: message.search || "", limit: message.limit || 100 }));
   if (message.type === "stats") return respond(native({ type: "stats" }).then(result => ({ ...result, checking: running, queued: queue.length })));
   if (message.type === "clear_history") return respond(clearHistory());
